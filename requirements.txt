@@ -1,0 +1,7 @@
+transformers
+datasets
+torch
+streamlit
+rouge_score
+py7zr
+accelerate
