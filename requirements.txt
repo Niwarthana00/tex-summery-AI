@@ -5,3 +5,10 @@ streamlit
 rouge_score
 py7zr
 accelerate
+evaluate
+nltk
+pandas
+matplotlib
+beautifulsoup4
+requests
+pypdf

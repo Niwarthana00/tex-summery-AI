@@ -1,4 +1,8 @@
 import streamlit as st
+import requests
+from bs4 import BeautifulSoup
+from io import BytesIO
+from pypdf import PdfReader
 from transformers import pipeline
 import time
 
@@ -9,6 +13,36 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+# --- Helper Functions for Extraction ---
+def extract_text_from_url(url):
+    try:
+        # User-Agent header to mimic a browser (avoid 403 errors)
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+        response = requests.get(url, headers=headers)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.content, 'html.parser')
+        
+        # Improve extraction: grab paragraphs
+        paragraphs = soup.find_all('p')
+        text = ' '.join([p.get_text() for p in paragraphs])
+        
+        if len(text) < 50:
+            return None, "No substantial text found. Website might be blocking scrapers."
+            
+        return text, None
+    except Exception as e:
+        return None, str(e)
+
+def extract_text_from_pdf(pdf_file):
+    try:
+        reader = PdfReader(pdf_file)
+        text = ""
+        for page in reader.pages:
+            text += page.extract_text() or ""
+        return text, None
+    except Exception as e:
+        return None, str(e)
 
 # --- Custom CSS for Modern Look ---
 st.markdown("""
@@ -67,7 +101,7 @@ st.markdown("""
 
 # --- Header ---
 st.title("✨ Text Summarizer System")
-st.markdown("Transform long articles into concise summaries instantly using **T5 Transformer** technology.")
+st.markdown("Transform long articles, PDFs, or Webpages into concise summaries instantly using **T5 Transformer** technology.")
 st.markdown("---")
 
 # --- Model Loading (Cached) ---
@@ -82,7 +116,7 @@ def load_model():
     except Exception:
         # Fallback
         pipe = pipeline("summarization", model="t5-small")
-        return pipe, "Base T5-Small Model"
+        return pipe, "Base T5-Small Model (Fallback)"
 
 # Sidebar
 with st.sidebar:
@@ -92,7 +126,7 @@ with st.sidebar:
     with st.spinner("Loading AI Model..."):
         summarizer, model_type = load_model()
         
-    if model_type == "Custom Finetuned Model":
+    if "Custom" in model_type:
         st.success(f"✅ Active: {model_type}")
     else:
         st.warning(f"⚠️ Active: {model_type}")
@@ -107,22 +141,72 @@ with st.sidebar:
     st.info("💡 **Tip:** Adjust lengths to get more detailed or concise results.")
 
 # --- Main Interface ---
+
+st.subheader("📥 Choose Input Source")
+tab1, tab2, tab3 = st.tabs(["📝 Paste Text", "🌐 Web URL", "📄 Upload PDF"])
+
+final_input_text = ""
+
+# TAB 1: Direct Text Input
+with tab1:
+    text_input_raw = st.text_area(
+        "Paste your article here:",
+        height=300,
+        placeholder="Enter or paste your text here to generate a summary..."
+    )
+    if text_input_raw:
+        final_input_text = text_input_raw
+
+# TAB 2: URL Input
+with tab2:
+    url_input = st.text_input("Enter Article URL:", placeholder="https://example.com/news-article")
+    if url_input:
+        if st.button("Fetch Content"):
+            with st.spinner("🕷️ Crawling website..."):
+                extracted_text, error = extract_text_from_url(url_input)
+                if error:
+                    st.error(f"❌ Error fetching URL: {error}")
+                else:
+                    st.success("✅ Content fetched successfully!")
+                    with st.expander("👁️ Preview Fetched Text"):
+                        st.text(extracted_text[:1000] + "...")
+                    
+                    # Auto-populate for summarization if user wants
+                    st.session_state['url_text'] = extracted_text
+
+    # Check if we have stored text from URL in session state
+    if 'url_text' in st.session_state and url_input:
+        final_input_text = st.session_state['url_text']
+
+
+# TAB 3: PDF Input
+with tab3:
+    uploaded_file = st.file_uploader("Upload a PDF document", type="pdf")
+    if uploaded_file:
+        with st.spinner("📄 Reading PDF..."):
+            extracted_text, error = extract_text_from_pdf(uploaded_file)
+            if error:
+                st.error(f"❌ Error reading PDF: {error}")
+            else:
+                st.success("✅ PDF loaded successfully!")
+                with st.expander("👁️ Preview Extracted Text"):
+                    st.text(extracted_text[:1000] + "...")
+                final_input_text = extracted_text
+
+st.markdown("---")
+
+# --- Generation Section ---
 col1, col2 = st.columns([1, 1], gap="large")
 
 with col1:
-    st.subheader("📥 Input Text")
-    text_input = st.text_area(
-        "Paste your article here:",
-        height=400,
-        placeholder="Enter or paste your text here to generate a summary..."
-    )
-    
-    if st.button("Generate Summary"):
-        if text_input:
-            with col2:
-                with st.spinner("🧠 Analyzing text and generating summary..."):
+    st.markdown("### Ready to Summarize?")
+    if final_input_text:
+        st.info(f"Arguments: Min={min_len}, Max={max_len}")
+        if st.button("🚀 Generate Summary", type="primary"):
+             with col2:
+                with st.spinner("🧠 Analyzing and summarizing..."):
                     try:
-                        # Adding a small artificial delay for UX smoothness on fast CPUs
+                        # Adding a small artificial delay for UX smoothness
                         time.sleep(0.5) 
                         
                         # Ensure logic consistency
@@ -130,9 +214,9 @@ with col1:
                             max_len = min_len + 10
                         
                         start_time = time.time()
-                        # Using Beam Search for better quality and adherence to length constraints
+                        # Using Beam Search for better quality
                         summary_output = summarizer(
-                            text_input, 
+                            final_input_text, 
                             max_length=max_len, 
                             min_length=min_len, 
                             num_beams=4, 
@@ -146,30 +230,20 @@ with col1:
                         st.subheader("📤 Generated Summary")
                         st.success(summary_text)
                         
-                        # Metrics (Optional UX touch)
-                        st.caption(f"⚡ Generated in {round(end_time - start_time, 2)} seconds.")
+                        # Metrics
+                        st.caption(f"⚡ Completed in {round(end_time - start_time, 2)} seconds.")
                         
                     except Exception as e:
-                        st.error(f"❌ An error occurred: {e}")
-        else:
-            st.toast("⚠️ Please enter some text first!")
-            
+                        st.error(f"❌ Model Error: {e}")
+    else:
+        st.warning("👈 Please provide input text in one of the tabs above.")
+
 with col2:
-    # Placeholder or specific instruction if empty
-    if not text_input:
-        st.info("👈 Waiting for input... The summary will appear here.")
-        st.markdown(
-            """
-            ### Features
-            - **Fast Processing**: Uses optimized T5 architecture.
-            - **Custom Trained**: Fine-tuned on news data for accuracy.
-            - **Adjustable**: Control the length of your output.
-            """
-        )
+    if not final_input_text:
+        st.write("") # Spacer
 
 # --- Footer ---
 st.markdown("---")
-st.center = True
 st.markdown(
     "<div style='text-align: center; color: #666;'>Built with ❤️ using Streamlit & Hugging Face Transformers</div>", 
     unsafe_allow_html=True
